@@ -124,13 +124,15 @@ function makeBakedTex(label, side) {
     ctx.fillRect(0, 0, TEX_W, TEX_H);
   }
 
-  // 3. Page label. Mirror horizontally on the back so that, after the
-  //    symmetric U-fold flip (which X-mirrors world coords), the label reads
-  //    correctly to the camera above.
+  // 3. Page label. The back face mesh has rotation.x = +π/2 which makes the
+  //    canvas appear V-flipped when viewed from above; the symmetric U-fold
+  //    roll additionally X-mirrors UV.U direction in world. Rotating the
+  //    label 180° on the canvas (combined V- and U-flip) compensates both
+  //    so the page number reads upright after the flip.
   ctx.save();
   if (side === 'back') {
     ctx.translate(TEX_W/2, TEX_H/2);
-    ctx.scale(-1, 1);
+    ctx.rotate(Math.PI);
     ctx.translate(-TEX_W/2, -TEX_H/2);
   }
   ctx.fillStyle = 'rgba(30,28,25,0.85)';
@@ -344,11 +346,17 @@ function getStepConfig(s) {
   if (s < UNFOLD_STEPS) {
     const folds = new Array(NUM_FOLDS).fill(0);
     if (s === 0) {
+      // Fully folded. After fold[0]+fold[1]+...+central, the panel deepest in
+      // the fold hierarchy ends on top with its BACK face up — that's row 0
+      // col 0, so the visible cover is backPage(0,0). Surface that in the HUD
+      // instead of hard-coding TOTAL_PANELS, which is only on top if the fold
+      // sequence happens to put it there (with the current scheme it doesn't).
       folds.fill(Math.PI);
+      const coverPage = backPage(0, 0);
       const { cx, cz } = unfoldCenter(1, false);
       const cam = camForExtent(W * 1.2, H * 1.2, cx, cz);
       return { folds, central: -Math.PI, flipAngle: 0, ...cam,
-        label: 'Fully folded — Page ' + TOTAL_PANELS };
+        label: 'Fully folded — Page ' + coverPage };
     }
     if (s === 1) {
       folds.fill(Math.PI);
@@ -480,7 +488,9 @@ function applyRollDeformation(progress) {
 function lerp(a, b, t) { return a + (b - a) * t; }
 
 function update(dt) {
-  const t = Math.min(dt * 3.0, 0.06);
+  // Frame-rate-independent exponential approach; characteristic time ~0.25s.
+  // Survives wildly varying dt (e.g. throttled background tabs).
+  const t = 1 - Math.exp(-dt * 4);
 
   for (let f = 0; f < NUM_FOLDS; f++) {
     state.folds[f] = lerp(state.folds[f], target.folds[f], t);
@@ -498,24 +508,87 @@ function update(dt) {
   state.flipAngle = lerp(state.flipAngle, target.flipAngle, t);
   applyRollDeformation(state.flipAngle / Math.PI);
 
-  camera.position.lerp(camPosT, Math.min(dt * 2.5, 0.05));
-  controls.target.lerp(camLookT, Math.min(dt * 2.5, 0.05));
+  const camT = 1 - Math.exp(-dt * 3);
+  camera.position.lerp(camPosT, camT);
+  controls.target.lerp(camLookT, camT);
   controls.update();
 }
 
 const clock = new THREE.Clock();
 function startLoop() {
+  // rAF for smooth playback when the tab is visible.
   (function loop() {
     requestAnimationFrame(loop);
-    update(clock.getDelta());
-    renderer.render(scene, camera);
+    if (!document.hidden) {
+      update(clock.getDelta());
+      renderer.render(scene, camera);
+    }
   })();
+  // setInterval fallback so the simulation keeps advancing when the tab is
+  // backgrounded — important for screenshot-driven testing where the page
+  // can be hidden but we still need state.flipAngle to lerp toward target.
+  let lastBgT = performance.now();
+  setInterval(() => {
+    if (!document.hidden) { lastBgT = performance.now(); return; }
+    const now = performance.now();
+    const dt = Math.min((now - lastBgT) / 1000, 0.05);
+    lastBgT = now;
+    // Reset the rAF Clock so it doesn't accumulate huge dt when the tab
+    // becomes visible again.
+    clock.getDelta();
+    update(dt);
+    renderer.render(scene, camera);
+  }, 33);
 }
 
 // ─── INIT ──────────────────────────────────────────────────────────────────
 paperImageReady.then(() => {
   buildPaper();
   paperGroup.userData.lastRollP = 0;
+
+  // expose for debugging
+  window.__SLICC = { state, target, paperGroup, allPanelMeshes, scene, camera,
+    snap: () => {
+      // Instantly drive the simulation to its current target — useful for
+      // background-tab screenshot testing where rAF / setInterval are
+      // heavily throttled so the time-based lerp can't complete.
+      for (let f = 0; f < NUM_FOLDS; f++) {
+        state.folds[f] = target.folds[f];
+        leftData.hinges[f].rotation.x  = state.folds[f];
+        rightData.hinges[f].rotation.x = state.folds[f];
+        const progress = state.folds[f] / Math.PI;
+        leftData.hinges[f].position.y  = progress * STACK_GAP * (NUM_FOLDS - f);
+        rightData.hinges[f].position.y = progress * STACK_GAP * (NUM_FOLDS - f);
+      }
+      state.central   = target.central;
+      state.flipAngle = target.flipAngle;
+      centralHinge.rotation.z = state.central;
+      centralHinge.position.y = (Math.abs(state.central) / Math.PI) * STACK_GAP * (NUM_FOLDS + 1);
+      applyRollDeformation(state.flipAngle / Math.PI);
+      camera.position.copy(camPosT);
+      controls.target.copy(camLookT);
+      renderer.render(scene, camera);
+    },
+    setFlip: (progress) => {
+      // Hold the simulation at a specific flip progress (0 unflipped, 1 flipped)
+      // for inspection without lerp interference.
+      for (let f = 0; f < NUM_FOLDS; f++) {
+        state.folds[f] = 0;
+        target.folds[f] = 0;
+        leftData.hinges[f].rotation.x  = 0;
+        rightData.hinges[f].rotation.x = 0;
+        leftData.hinges[f].position.y  = 0;
+        rightData.hinges[f].position.y = 0;
+      }
+      state.central = 0; target.central = 0;
+      centralHinge.rotation.z = 0;
+      centralHinge.position.y = 0;
+      state.flipAngle = progress * Math.PI;
+      target.flipAngle = progress * Math.PI;
+      applyRollDeformation(progress);
+      renderer.render(scene, camera);
+    }
+  };
 
   goTo(0);
   for (let f = 0; f < NUM_FOLDS; f++) {
