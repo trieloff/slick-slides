@@ -98,15 +98,35 @@ ground.receiveShadow = true; scene.add(ground);
 // that came from transparent overlay meshes.
 const paperImage = new Image();
 paperImage.crossOrigin = 'anonymous';
-const paperImageReady = new Promise((res, rej) => {
-  paperImage.onload = res;
-  paperImage.onerror = rej;
+let imageOk = false;
+let bumpOk = false;
+const imageReady = new Promise((res) => {
+  paperImage.onload = () => { imageOk = true; res(); };
+  paperImage.onerror = () => res();
 });
 paperImage.src = 'material_6.png';
 
-// Bump map can stream in lazily — Three.js will update it once decoded.
-const paperBumpTex = new THREE.TextureLoader().load('material_6.png');
-paperBumpTex.wrapS = paperBumpTex.wrapT = THREE.RepeatWrapping;
+// Bump map shares the same source file as the paper image. Wait for it too so
+// that `bumpOk` is settled before `makePanel()` builds the materials.
+let paperBumpTex = null;
+const bumpReady = new Promise((res) => {
+  paperBumpTex = new THREE.TextureLoader().load(
+    'material_6.png',
+    (tex) => {
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      bumpOk = true;
+      res();
+    },
+    undefined,
+    () => res()
+  );
+});
+
+const paperImageReady = Promise.all([imageReady, bumpReady]).then(() => {
+  if (!imageOk) {
+    console.info('material_6.png unavailable — using flat paper color fallback');
+  }
+});
 
 // ─── BAKED TEXTURE: paper material + page label, no overlay meshes ─────────
 function makeBakedTex(label, side) {
@@ -115,7 +135,12 @@ function makeBakedTex(label, side) {
   const ctx = c.getContext('2d');
 
   // 1. Paper material
-  ctx.drawImage(paperImage, 0, 0, TEX_W, TEX_H);
+  if (imageOk) {
+    ctx.drawImage(paperImage, 0, 0, TEX_W, TEX_H);
+  } else {
+    ctx.fillStyle = '#e8e1cf';
+    ctx.fillRect(0, 0, TEX_W, TEX_H);
+  }
 
   // 2. Faint cool tint on the back so the two sides feel different even
   //    before you read the page numbers.
@@ -201,22 +226,26 @@ function makePanel(fp, bp, panelCenterX, panelCenterZ) {
   bPos.needsUpdate = true;
   backGeo.computeVertexNormals();
 
-  const frontMat = new THREE.MeshStandardMaterial({
+  const frontMatOpts = {
     map: makeBakedTex('' + fp, 'front'),
-    bumpMap: paperBumpTex,
-    bumpScale: 0.02,
     roughness: 0.82,
     metalness: 0.0,
     side: THREE.FrontSide,
-  });
-  const backMat = new THREE.MeshStandardMaterial({
+  };
+  const backMatOpts = {
     map: makeBakedTex('' + bp, 'back'),
-    bumpMap: paperBumpTex,
-    bumpScale: 0.02,
     roughness: 0.85,
     metalness: 0.0,
     side: THREE.FrontSide,
-  });
+  };
+  if (bumpOk) {
+    frontMatOpts.bumpMap = paperBumpTex;
+    frontMatOpts.bumpScale = 0.02;
+    backMatOpts.bumpMap = paperBumpTex;
+    backMatOpts.bumpScale = 0.02;
+  }
+  const frontMat = new THREE.MeshStandardMaterial(frontMatOpts);
+  const backMat = new THREE.MeshStandardMaterial(backMatOpts);
 
   const front = new THREE.Mesh(frontGeo, frontMat);
   front.rotation.x = -Math.PI / 2;
@@ -393,7 +422,7 @@ function getStepConfig(s) {
     const flipCam = camForExtent(W * 2.5, ROWS * H * 1.2);
     return { folds: new Array(NUM_FOLDS).fill(0), central: 0, flipAngle: Math.PI,
       pos: [flipCam.pos[0], flipCam.pos[1] + W * 1.2, flipCam.pos[2] * 1.05],
-      look: [0, 0, 0], label: 'Rolling over…' };
+      look: [0, 0, 0], label: 'Flipping…' };
   }
   if (s >= BACK_ZOOM_START && s <= BACK_ZOOM_END) {
     const page = PANELS_PER_SIDE + (s - BACK_ZOOM_START) + 1;
@@ -424,27 +453,47 @@ function goTo(s) {
   document.getElementById('info').textContent = c.label;
 }
 
-// ─── ROLL DEFORMATION (symmetric U-fold) ───────────────────────────────────
-// Each vertex (worldX, 0, worldZ) maps to:
-//   x' = worldX * cos θ
-//   y' = |worldX| * sin θ        (both halves lift up symmetrically)
-//   z' = worldZ
-// At θ = 0   the paper is flat with the front facing up.
-// At θ = π/2 both halves meet over the centre crease (book-closed shape).
-// At θ = π   the paper is flat again with X mirrored — which is exactly the
-//            geometry mirror that flips the surface normals so the back
-//            material becomes visible to the camera above. No "wave sweep",
-//            no fold-and-unfold cliff; every vertex traces the same continuous
-//            arc.
-function applyRollDeformation(progress) {
+// ─── PAPER FLIP DEFORMATION (single-corner page-flip with diagonal droop) ──
+// Composition of two transforms applied in the original flat-paper world frame:
+//   1. Developable hinge bend along the TL->BR diagonal. Only vertices on the
+//      BL side of this diagonal are rotated about the diagonal axis (TL and
+//      BR sit on the axis and are fixed by the bend). Bend angle peaks at
+//      p=0.5 (MAX_BEND ≈ 1.2 rad ≈ 69°) and is zero at both endpoints, so
+//      the paper is perfectly flat at p∈{0,1}. The rotation sign sends the
+//      BL side DOWN in the flat frame, so the subsequent global rotation's
+//      lift turns that into a visible sag of the lifted corner — gravity
+//      droop along the diagonal opposite the "grabbed" corner.
+//   2. Rigid rotation about the vertical (+Z) axis through the world origin
+//      by angle φ = π·p, with a compensating Y-lift  +(W/2 − wx)·sinφ  that
+//      keeps the right edge x=+W/2 anchored on the table (y=0). The right
+//      edge traces a near-stationary pivot while the left edge swings up
+//      and over; at φ=π the transform reduces to (wx,0,wz) → (−wx,0,wz),
+//      i.e. the exact X mirror the baked back-side labels in makeBakedTex
+//      assume (do not touch that).
+// Easing (p = ½ − ½·cos(π·progressRaw)) is applied INSIDE this function so
+// the linear lerp in update() still hits the endpoints cleanly.
+function applyRollDeformation(progressRaw) {
   const last = paperGroup.userData.lastRollP;
-  if (last !== undefined && Math.abs(progress - last) < 0.0005
-      && (progress === 0 || progress === 1)) return;
-  paperGroup.userData.lastRollP = progress;
+  if (last !== undefined && Math.abs(progressRaw - last) < 0.0005
+      && (progressRaw === 0 || progressRaw === 1)) return;
+  paperGroup.userData.lastRollP = progressRaw;
 
-  const θ = progress * Math.PI;
-  const cosθ = Math.cos(θ);
-  const sinθ = Math.sin(θ);
+  const p = 0.5 - 0.5 * Math.cos(Math.PI * progressRaw);
+
+  // Rigid rotation angle about +Z through the origin.
+  const phi = Math.PI * p;
+  const cosF = Math.cos(phi);
+  const sinF = Math.sin(phi);
+
+  // Developable hinge bend along TL->BR diagonal (in y=0 plane).
+  const MAX_BEND = 1.2;
+  const A = MAX_BEND * Math.sin(Math.PI * p);
+  const cA = Math.cos(A);
+  const sA = Math.sin(A);
+  const diagLen = Math.hypot(W, H);
+  const ax = W / diagLen;   // axis x-component (TL -> BR direction)
+  const az = H / diagLen;   // axis z-component
+  // Side metric: sigma = wz*ax - wx*az.  > 0 on the BL side.
 
   for (const entry of allPanelMeshes) {
     const { mesh, geo, isFront } = entry;
@@ -452,6 +501,7 @@ function applyRollDeformation(progress) {
     const panelWorldPos = new THREE.Vector3();
     panelGroup.getWorldPosition(panelWorldPos);
     const panelX = panelWorldPos.x;
+    const panelZ = panelWorldPos.z;
 
     const pos = geo.attributes.position;
 
@@ -469,15 +519,47 @@ function applyRollDeformation(progress) {
     const oy = geo.userData.origY;
     const oz = geo.userData.origZ;
 
-    for (let i = 0; i < pos.count; i++) {
-      const wx = panelX + ox[i];
-      const newWx = wx * cosθ;
-      const lift  = Math.abs(wx) * sinθ;
+    // Front mesh: rotation.x = -PI/2 maps local +Z -> world +Y, local +Y -> world -Z.
+    // Back  mesh: rotation.x = +PI/2 maps local +Z -> world -Y, local +Y -> world +Z.
+    // With s = +1 (front) or -1 (back):
+    //   wy = s * oz,   wz = panelZ - s * oy,   wx = panelX + ox.
+    const s = isFront ? 1 : -1;
 
-      pos.setX(i, newWx - panelX);
-      pos.setY(i, oy[i]);
-      // Front mesh local +Z → world +Y; back mesh local +Z → world -Y.
-      pos.setZ(i, oz[i] + (isFront ? lift : -lift));
+    for (let i = 0; i < pos.count; i++) {
+      let wx = panelX + ox[i];
+      let wy = s * oz[i];
+      let wz = panelZ - s * oy[i];
+
+      // 1. Diagonal hinge bend (BL side only). Rodrigues rotation about
+      //    axis (ax, 0, az) by angle A. The rotation drops BL-side vertices
+      //    in the flat frame; once the rigid rotation lifts the sheet this
+      //    reads as the lifted corner sagging under gravity.
+      const sigma = wz * ax - wx * az;
+      if (sigma > 0 && A > 1e-5) {
+        const dot = ax * wx + az * wz;          // a . v   (ay = 0)
+        const cxX = -az * wy;                   // (a x v).x
+        const cxY = az * wx - ax * wz;          // (a x v).y
+        const cxZ = ax * wy;                    // (a x v).z
+        const k = 1 - cA;
+        const bx = wx * cA + cxX * sA + ax * dot * k;
+        const by = wy * cA + cxY * sA;          // ay*dot*k = 0
+        const bz = wz * cA + cxZ * sA + az * dot * k;
+        wx = bx; wy = by; wz = bz;
+      }
+
+      // 2. Rigid rotation about +Z through origin by -φ, plus a compensating
+      //    +Y lift of (W/2 − wx)·sinφ that pins the right edge (x=+W/2) to
+      //    y=0 throughout. At φ=π this collapses to (wx,wy,wz)→(−wx,−wy,wz),
+      //    which on the flat sheet is the exact X mirror the baked
+      //    back-side labels assume.
+      const nwx = wx * cosF + wy * sinF;
+      const nwy = (W / 2 - wx) * sinF + wy * cosF;
+      const nwz = wz;
+
+      // world -> local
+      pos.setX(i, nwx - panelX);
+      pos.setY(i, s * (panelZ - nwz));
+      pos.setZ(i, s * nwy);
     }
     pos.needsUpdate = true;
     geo.computeVertexNormals();
@@ -589,6 +671,7 @@ paperImageReady.then(() => {
       renderer.render(scene, camera);
     }
   };
+  window.__setRoll = window.__SLICC.setFlip;
 
   goTo(0);
   for (let f = 0; f < NUM_FOLDS; f++) {
@@ -603,9 +686,6 @@ paperImageReady.then(() => {
   camera.position.copy(camPosT);
   controls.target.copy(camLookT);
   startLoop();
-}).catch(err => {
-  console.error('paper image failed to load:', err);
-  document.getElementById('info').textContent = 'Failed to load material_6.png';
 });
 
 // ─── INPUT ─────────────────────────────────────────────────────────────────
