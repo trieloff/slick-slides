@@ -350,14 +350,14 @@ function buildColumn(xOffset) {
 }
 
 function buildPaper() {
-  rightData = buildColumn( W/2);
-  paperGroup.add(rightData.group);
+  leftData = buildColumn(-W/2);
+  paperGroup.add(leftData.group);
 
   centralHinge = new THREE.Group();
   paperGroup.add(centralHinge);
 
-  leftData = buildColumn(-W/2);
-  centralHinge.add(leftData.group);
+  rightData = buildColumn( W/2);
+  centralHinge.add(rightData.group);
 
   // Decorative crease lines
   const creaseMat = new THREE.LineBasicMaterial({ color: 0x8a7e6a, transparent: true, opacity: 0.4 });
@@ -426,7 +426,7 @@ function getStepConfig(s) {
       const coverPage = backPage(0, 0);
       const { cx, cz } = unfoldCenter(1, false);
       const cam = camForExtent(W * 1.2, H * 1.2, cx, cz);
-      return { folds, central: -Math.PI, flipAngle: 0, ...cam,
+      return { folds, central: Math.PI, flipAngle: 0, ...cam,
         label: 'Cover — Slide ' + (SLIDE_MAP[coverPage] || coverPage) };
     }
     if (s === 1) {
