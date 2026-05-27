@@ -422,9 +422,17 @@ function getStepConfig(s) {
     if (s === 0) {
       folds.fill(Math.PI);
       const coverPage = backPage(ROWS-1, 0);  // bottom-left back = 24 after central flip
-      const { cx, cz } = unfoldCenter(1, false);
-      const cam = camForExtent(W * 1.2, H * 1.2, cx, cz);
-      return { folds, central: -Math.PI, flipAngle: 0, ...cam,
+      // Camera straight above the folded stack, filling frame
+      // The cover panel lands at approximately (W/2, ~0.09, rowZ(ROWS-1))
+      const coverX = W / 2;
+      const coverZ = rowZ(ROWS - 1);
+      const fov = 45 * Math.PI / 180;
+      const aspect = innerWidth / innerHeight || 16/9;
+      const fitH = (H / 2) / Math.tan(fov / 2);
+      const fitW = (W / 2) / (Math.tan(fov / 2) * aspect);
+      const dist = Math.max(fitH, fitW) * 1.02;
+      return { folds, central: -Math.PI, flipAngle: 0,
+        pos: [coverX, dist, coverZ], look: [coverX, 0, coverZ],
         label: 'Cover — Slide ' + (SLIDE_MAP[coverPage] || coverPage) };
     }
     if (s === 1) {
