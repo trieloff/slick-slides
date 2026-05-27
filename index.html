@@ -189,16 +189,12 @@ function makeBakedTex(label, side) {
   }
 
   if (hasSlide) {
-    // Draw slide image with slight padding and paper blend
-    const pad = Math.round(cW * 0.03);
-    ctx.globalAlpha = 0.92;
-    ctx.drawImage(slideImages[slideNum], pad, pad, cW - pad*2, cH - pad*2);
+    // Darken blend at 90%: paper texture shows through the slide
+    ctx.globalCompositeOperation = 'darken';
+    ctx.globalAlpha = 0.9;
+    ctx.drawImage(slideImages[slideNum], 0, 0, cW, cH);
     ctx.globalAlpha = 1.0;
-
-    // Subtle border
-    ctx.strokeStyle = 'rgba(0,0,0,0.1)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(pad, pad, cW - pad*2, cH - pad*2);
+    ctx.globalCompositeOperation = 'source-over';
   } else {
     // Fallback: page number (for any missing slide images)
     ctx.fillStyle = 'rgba(30,28,25,0.85)';
