@@ -67,7 +67,7 @@ renderer.shadowMap.enabled = true;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x111111);
+scene.background = new THREE.Color(0xffffff);
 const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 100);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true; controls.dampingFactor = 0.08;
@@ -87,7 +87,7 @@ fill.position.set(-3, 5, -4); scene.add(fill);
 
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(30, 30),
-  new THREE.MeshStandardMaterial({ color: 0x1a1815, roughness: 0.92, metalness: 0.02 })
+  new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0.0 })
 );
 ground.rotation.x = -Math.PI/2; ground.position.y = -0.05;
 ground.receiveShadow = true; scene.add(ground);
@@ -358,17 +358,7 @@ function buildPaper() {
   leftData = buildColumn(-W/2);
   centralHinge.add(leftData.group);
 
-  // Decorative crease lines
-  const creaseMat = new THREE.LineBasicMaterial({ color: 0x8a7e6a, transparent: true, opacity: 0.4 });
-  for (let f = 0; f < NUM_FOLDS; f++) {
-    const cz = creaseZ(f);
-    const pts = [new THREE.Vector3(-W, 0.01, cz), new THREE.Vector3(W, 0.01, cz)];
-    paperGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), creaseMat));
-  }
-  {
-    const pts = [new THREE.Vector3(0, 0.01, rowZ(0) - H/2), new THREE.Vector3(0, 0.01, rowZ(ROWS-1) + H/2)];
-    paperGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), creaseMat));
-  }
+  // Crease lines removed for clean presentation look
 }
 
 // ─── ANIMATION STATE ───────────────────────────────────────────────────────
