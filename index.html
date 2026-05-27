@@ -49,14 +49,14 @@ const STACK_GAP = 0.005;
 const NUM_FOLDS = ROWS - 1;                 // sequential row folds
 const GEO_SEGS_X = 32;                      // segments along width (smooth roll)
 const GEO_SEGS_Y = 24;                      // segments along height
-const CRUMPLE_AMP = 0.006;                  // subtle paper undulation
+const CRUMPLE_AMP = 0.0;                     // disabled for debugging
 
 // Texture canvas size (matches A4 landscape ratio ≈ √2 : 1)
 const TEX_W = 512, TEX_H = 362;
 
 // ─── DERIVE PAGE NUMBERING ─────────────────────────────────────────────────
 function frontPage(row, col) { return row * 2 + col + 1; }
-function backPage(row, col)  { return PANELS_PER_SIDE + (ROWS - 1 - row) * 2 + (1 - col) + 1; }
+function backPage(row, col)  { return PANELS_PER_SIDE + row * 2 + (1 - col) + 1; }
 
 // ─── THREE.JS SETUP ────────────────────────────────────────────────────────
 const canvas = document.getElementById('c');
@@ -320,6 +320,9 @@ function buildColumn(xOffset) {
   const foldHinges = [];
   const col = xOffset > 0 ? 1 : 0;
 
+  // Base is row ROWS-1 (bottom). Row folds stack upward.
+  // The central fold then flips the left column over, inverting Y —
+  // so the base (row 5, bottom) ends up on TOP after the fold-over.
   const baseRow = makePanel(
     '' + frontPage(ROWS-1, col),
     '' + backPage(ROWS-1, col),
@@ -417,13 +420,8 @@ function getStepConfig(s) {
   if (s < UNFOLD_STEPS) {
     const folds = new Array(NUM_FOLDS).fill(0);
     if (s === 0) {
-      // Fully folded. After fold[0]+fold[1]+...+central, the panel deepest in
-      // the fold hierarchy ends on top with its BACK face up — that's row 0
-      // col 0, so the visible cover is backPage(0,0). Surface that in the HUD
-      // instead of hard-coding TOTAL_PANELS, which is only on top if the fold
-      // sequence happens to put it there (with the current scheme it doesn't).
       folds.fill(Math.PI);
-      const coverPage = backPage(0, 0);
+      const coverPage = backPage(ROWS-1, 0);  // bottom-left back = 24 after central flip
       const { cx, cz } = unfoldCenter(1, false);
       const cam = camForExtent(W * 1.2, H * 1.2, cx, cz);
       return { folds, central: -Math.PI, flipAngle: 0, ...cam,
@@ -621,13 +619,13 @@ function update(dt) {
     leftData.hinges[f].rotation.x  = state.folds[f];
     rightData.hinges[f].rotation.x = state.folds[f];
     const progress = state.folds[f] / Math.PI;
-    leftData.hinges[f].position.y  = progress * STACK_GAP * (NUM_FOLDS - f);
-    rightData.hinges[f].position.y = progress * STACK_GAP * (NUM_FOLDS - f);
+    leftData.hinges[f].position.y  = progress * STACK_GAP * (NUM_FOLDS - f) * ((f % 2 === 0) ? 1 : -1);
+    rightData.hinges[f].position.y = progress * STACK_GAP * (NUM_FOLDS - f) * ((f % 2 === 0) ? 1 : -1);
   }
 
   state.central = lerp(state.central, target.central, t);
   centralHinge.rotation.z = state.central;
-  centralHinge.position.y = (Math.abs(state.central) / Math.PI) * STACK_GAP * (NUM_FOLDS + 1);
+  centralHinge.position.y = (Math.abs(state.central) / Math.PI) * STACK_GAP * (NUM_FOLDS + 1) * 3;
 
   state.flipAngle = lerp(state.flipAngle, target.flipAngle, t);
   applyRollDeformation(state.flipAngle / Math.PI);
@@ -670,8 +668,136 @@ paperImageReady.then(() => {
   buildPaper();
   paperGroup.userData.lastRollP = 0;
 
+  // Auto-debug: snap to folded state and log stacking order
+  goTo(0);
+  // Force instant snap
+  for (let f = 0; f < NUM_FOLDS; f++) {
+    state.folds[f] = target.folds[f];
+    leftData.hinges[f].rotation.x  = state.folds[f];
+    rightData.hinges[f].rotation.x = state.folds[f];
+    const progress = state.folds[f] / Math.PI;
+    leftData.hinges[f].position.y  = progress * STACK_GAP * (NUM_FOLDS - f) * ((f % 2 === 0) ? 1 : -1);
+    rightData.hinges[f].position.y = progress * STACK_GAP * (NUM_FOLDS - f) * ((f % 2 === 0) ? 1 : -1);
+  }
+  state.central = target.central;
+  centralHinge.rotation.z = state.central;
+  centralHinge.position.y = (Math.abs(state.central) / Math.PI) * STACK_GAP * (NUM_FOLDS + 1) * 3;
+  scene.updateMatrixWorld(true);
+  setTimeout(() => debugStack(), 100);
+
+  // ─── DEBUG: stacking order when folded ──────────────────────────────────
+  function debugStack() {
+    // Snap to fully folded, compute world Y of each panel center, sort, print
+    const entries = [];
+    for (const entry of allPanelMeshes) {
+      const { mesh, isFront } = entry;
+      const wp = new THREE.Vector3();
+      mesh.getWorldPosition(wp);
+      // Determine which page this mesh shows
+      const label = mesh.material.map?.name || mesh.material.map?.image?.label || '?';
+      entries.push({
+        y: wp.y,
+        x: wp.x.toFixed(3),
+        z: wp.z.toFixed(3),
+        side: isFront ? 'F' : 'B',
+        label
+      });
+    }
+    // Also compute from the panel groups
+    const panelEntries = [];
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const fp = frontPage(r, c);
+        const bp = backPage(r, c);
+        // Count how many rotations this row accumulates
+        const col = c;
+        const data = col === 0 ? leftData : rightData;
+        let numRots = 0;
+        // Row r is in hinges 0...(NUM_FOLDS - 1 - (ROWS-1-r)) when counting from innermost
+        // Actually: row f's panel is attached to hinge[f] (for f < ROWS-1) or is the base (f=ROWS-1)
+        if (r < ROWS - 1) {
+          // This row's panel is in hinge[r] and all outer hinges
+          numRots = NUM_FOLDS - r;  // hinges r, r+1, ..., NUM_FOLDS-1 but wait...
+        }
+        // Let's just read the world position
+        panelEntries.push({ row: r, col: c, fp, bp });
+      }
+    }
+
+    // Compute world Y for each panel group by traversing hierarchy
+    console.log('=== STACKING ORDER (fully folded) ===');
+    console.log('Row | Col | Front# | Back# | WorldY');
+    console.log('----+-----+--------+-------+-------');
+    
+    // For each mesh, extract page info from the texture
+    const sorted = [];
+    allPanelMeshes.forEach(({ mesh, isFront }) => {
+      const wp = new THREE.Vector3();
+      mesh.getWorldPosition(wp);
+      const parent = mesh.parent; // the panel group
+      const pgp = new THREE.Vector3();
+      parent.getWorldPosition(pgp);
+      sorted.push({ y: pgp.y, isFront, worldPos: pgp });
+    });
+
+    // Group by panel group (front+back share parent)
+    const groups = new Map();
+    allPanelMeshes.forEach(({ mesh, isFront }) => {
+      const parent = mesh.parent;
+      if (!groups.has(parent)) {
+        const wp = new THREE.Vector3();
+        parent.getWorldPosition(wp);
+        groups.set(parent, { y: wp.y, x: wp.x, z: wp.z });
+      }
+    });
+
+    // Map panel groups to their row/col by matching build order
+    // buildColumn creates panels in order: baseRow (ROWS-1), then f from NUM_FOLDS-1 down to 0
+    // So row order is: ROWS-1, ROWS-2, ROWS-3, ..., 0
+    const leftPanels = [];  // panels in left column, in build order
+    const rightPanels = []; // panels in right column
+    let idx = 0;
+    for (const { mesh } of allPanelMeshes) {
+      const parent = mesh.parent;
+      const col = idx < allPanelMeshes.length / 2 ? 1 : 0; // right built first
+      idx++;
+    }
+
+    // Simpler approach: just log world Y of all panel meshes with their index
+    console.log('Panel mesh world positions (sorted by Y descending = top first):');
+    const allPositions = [];
+    for (let i = 0; i < allPanelMeshes.length; i += 2) {
+      // Each panel has front (i) and back (i+1) mesh
+      const front = allPanelMeshes[i];
+      const back = allPanelMeshes[i + 1];
+      const wp = new THREE.Vector3();
+      front.mesh.parent.getWorldPosition(wp);
+      const panelIdx = Math.floor(i / 2);
+      // Determine row/col from build order
+      // Right column built first: base(row5), then rows 4,3,2,1,0
+      // Left column built second: base(row5), then rows 4,3,2,1,0
+      const isRight = panelIdx < ROWS;
+      const col = isRight ? 1 : 0;
+      const rowInCol = isRight ? panelIdx : panelIdx - ROWS;
+      // Build order: base=ROWS-1, then ROWS-2, ..., 0
+      const row = rowInCol === 0 ? ROWS - 1 : ROWS - 1 - rowInCol;
+      allPositions.push({
+        row, col,
+        fp: frontPage(row, col),
+        bp: backPage(row, col),
+        y: wp.y.toFixed(4),
+        x: wp.x.toFixed(3),
+        faceUp: front.mesh.getWorldDirection(new THREE.Vector3()).y > 0 ? 'front' : 'back'
+      });
+    }
+    allPositions.sort((a, b) => parseFloat(b.y) - parseFloat(a.y));
+    allPositions.forEach(p => {
+      console.log(`  Y=${p.y} row=${p.row} col=${p.col} fp=${p.fp} bp=${p.bp} faceUp=${p.faceUp}`);
+    });
+  }
+
   // expose for debugging
-  window.__SLICC = { state, target, paperGroup, allPanelMeshes, scene, camera,
+  window.__SLICC = { state, target, paperGroup, allPanelMeshes, scene, camera, debugStack,
     snap: () => {
       // Instantly drive the simulation to its current target — useful for
       // background-tab screenshot testing where rAF / setInterval are
@@ -681,13 +807,13 @@ paperImageReady.then(() => {
         leftData.hinges[f].rotation.x  = state.folds[f];
         rightData.hinges[f].rotation.x = state.folds[f];
         const progress = state.folds[f] / Math.PI;
-        leftData.hinges[f].position.y  = progress * STACK_GAP * (NUM_FOLDS - f);
-        rightData.hinges[f].position.y = progress * STACK_GAP * (NUM_FOLDS - f);
+        leftData.hinges[f].position.y  = progress * STACK_GAP * (NUM_FOLDS - f) * ((f % 2 === 0) ? 1 : -1);
+        rightData.hinges[f].position.y = progress * STACK_GAP * (NUM_FOLDS - f) * ((f % 2 === 0) ? 1 : -1);
       }
       state.central   = target.central;
       state.flipAngle = target.flipAngle;
       centralHinge.rotation.z = state.central;
-      centralHinge.position.y = (Math.abs(state.central) / Math.PI) * STACK_GAP * (NUM_FOLDS + 1);
+      centralHinge.position.y = (Math.abs(state.central) / Math.PI) * STACK_GAP * (NUM_FOLDS + 1) * 3;
       applyRollDeformation(state.flipAngle / Math.PI);
       camera.position.copy(camPosT);
       controls.target.copy(camLookT);
