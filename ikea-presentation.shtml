@@ -36,6 +36,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #fff; }
   <button id="next">›</button>
 </div>
 
+<script src="/preview/shared/sprinkles/ikea-presentation/qrcode.min.js"></script>
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/" } }
 </script>
@@ -510,6 +511,75 @@ window.addEventListener('resize', () => {
     camLookT.set(...c.look);
   }
 });
+
+// ─── SPRINKLE.SEND HANDLER ──────────────────────────────────────────────────
+// Accepts:
+//   {action:'update-slide', slide:N, imageUrl:'...'} — replace texture with image
+//   {action:'update-slide', slide:N, dataUrl:'...'} — replace texture with data URL
+//   {action:'qr', slide:N, url:'...'} — render QR code onto slide (uses local lib)
+function updateSlideTexture(slideNum, src) {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    slideImages[slideNum] = img;
+    for (let i = 0; i < allPanelMeshes.length; i++) {
+      const entry = allPanelMeshes[i];
+      const panelIdx = Math.floor(i / 2);
+      const isRight = panelIdx < ROWS;
+      const col = isRight ? 1 : 0;
+      const rowInCol = isRight ? panelIdx : panelIdx - ROWS;
+      const row = rowInCol === 0 ? ROWS - 1 : ROWS - 1 - rowInCol;
+      const side = entry.isFront ? 'front' : 'back';
+      const pageNum = side === 'front' ? frontPage(row, col) : backPage(row, col);
+      const mappedSlide = SLIDE_MAP[pageNum] || pageNum;
+      if (mappedSlide === slideNum) {
+        const mat = entry.mesh.material;
+        if (mat.map) mat.map.dispose();
+        mat.map = makeBakedTex('' + pageNum, side);
+        mat.needsUpdate = true;
+      }
+    }
+  };
+  img.src = src;
+}
+
+function generateQR(url, size) {
+  // Uses locally-bundled qrcode-generator library
+  const qr = qrcode(0, 'M');
+  qr.addData(url);
+  qr.make();
+  const modules = qr.getModuleCount();
+  const cellSize = Math.floor(size / (modules + 8)); // 4-module quiet zone each side
+  const offset = Math.floor((size - modules * cellSize) / 2);
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = '#000000';
+  for (let row = 0; row < modules; row++) {
+    for (let col = 0; col < modules; col++) {
+      if (qr.isDark(row, col)) {
+        ctx.fillRect(offset + col * cellSize, offset + row * cellSize, cellSize, cellSize);
+      }
+    }
+  }
+  return c.toDataURL('image/png');
+}
+
+if (window.slicc && window.slicc.on) {
+  window.slicc.on('update', (data) => {
+    if (!data) return;
+    if (data.action === 'update-slide' && data.slide) {
+      const src = data.dataUrl || data.imageUrl;
+      if (src) updateSlideTexture(data.slide, src);
+    }
+    if (data.action === 'qr' && data.slide && data.url) {
+      const dataUrl = generateQR(data.url, 512);
+      updateSlideTexture(data.slide, dataUrl);
+    }
+  });
+}
 
 // ─── INIT ───────────────────────────────────────────────────────────────────
 allReady.then(() => {
