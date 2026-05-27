@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SLÏCC — The Agent Enablement Platform</title>
+<link rel="icon" href="presentation" />
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #fff; }
+#c { width: 100%; height: 100%; display: block; }
+#hud {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,0.7); padding: 12px 24px; border-radius: 30px;
+  backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.08);
+  display: flex; align-items: center; gap: 14px; z-index: 10; font-size: 13px;
+  font-family: system-ui; color: #fff;
+  opacity: 0; transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+#hud.visible { opacity: 1; pointer-events: auto; }
+#hud button {
+  background: none; border: 1px solid rgba(255,255,255,0.2); color: #fff;
+  width: 36px; height: 36px; border-radius: 50%; cursor: pointer; font-size: 16px;
+  display: flex; align-items: center; justify-content: center;
+}
+#hud button:hover { background: rgba(255,255,255,0.1); }
+#info { min-width: 120px; text-align: center; opacity: 0.7; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <button id="prev">‹</button>
+  <span id="info">…</span>
+  <button id="next">›</button>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ─── SLIDE CONTEXT (for licks) ──────────────────────────────────────────────
+const SLIDE_CONTEXT = {
+  1: { title: 'Bookend Open', context: 'Opening story: IKEA restaurant, hot dog + ice cream, thinking about OpenClaw. "An agent taking over my computer seemed absurd." Sets up the personal origin and justifies the IKEA aesthetic.' },
+  2: { title: 'Disembodied Agents', context: 'What Is #1: AI agents today run in cloud containers and remote sandboxes. Powerful but disembodied — they cannot see what the user sees.' },
+  3: { title: 'Browser-Native', context: 'What Could Be #1: What if the agent ran where your life already happens? The browser. Inside it, not adjacent.' },
+  4: { title: 'Chat-Panel Trap', context: 'What Is #2: Every product ships a confined AI box. Each blind to the next tab. XKCD 927.' },
+  5: { title: 'One Agent Unconfined', context: 'What Could Be #2: One agent sees Slack, email, CMS, code — because it IS the browser.' },
+  6: { title: 'Skill Issues', context: 'What Is #3: Agents lack context, not capability. You cannot hardcode every workflow.' },
+  7: { title: 'Skills as Markdown', context: 'What Could Be #3: Skills are markdown files. Teach, dont build. Install or author in 5 minutes.' },
+  8: { title: 'Can You See My Browser?', context: 'What Is #4: March 2025 — Lars asks Claude to see his browser. Claude responds: "I cannot access your device." The founding frustration.' },
+  9: { title: 'Self-Licking Ice Cream Cone', context: 'What Could Be #4: SLICC. A browser-native agent. In the browser. For the browser. Of the browser.' },
+  10: { title: 'Browser Cant Do', context: 'What Is #5: Things you know your browser cant do — take photos, convert video, play audio, be a web server.' },
+  11: { title: 'Youre Wrong', context: 'What Could Be #5: ffmpeg, say, serve — the browser can do all of it. We just forgot to ask.' },
+  12: { title: 'The Reveal', context: 'S.T.A.R. moment. Lars minimizes this sprinkle, revealing SLICC underneath. The presentation WAS the demo. Everything after this is live.' },
+  13: { title: 'Sprinkles', context: 'Post-reveal. What you just saw is a sprinkle — a persistent UI panel created by a scoop. This presentation is one.' },
+  14: { title: 'Licks + QR', context: 'Live demo: set up a webhook, generate a QR code. Audience scans and sends messages that arrive in real-time. Proves licks work.' },
+  15: { title: 'Dips', context: 'Inline widgets in chat. Ephemeral, interactive, lick-only. Zero overhead.' },
+  16: { title: 'Scoops', context: 'Parallel sub-agents with isolated sandboxes. The cone orchestrates; scoops do heavy lifting.' },
+  17: { title: 'Architecture', context: 'Technical underpinnings: pi-agent, just-bash, durableworker, WASM. The browser IS the container.' },
+  18: { title: 'Protocols', context: 'HTTP, WebRTC, WebSockets, CDP. Full network stack, client-side.' },
+  19: { title: 'Dev Tools', context: 'A real shell: git, node, python, playwright, ffmpeg. Write .jsh scripts to extend.' },
+  20: { title: 'MCP via CLI', context: 'mcp add <url> — one command to register any MCP server as a shell command.' },
+  21: { title: 'Electron + Tray', context: 'Inject into Slack, Outlook, Cursor. Any Electron app becomes a remote-controllable target.' },
+  22: { title: 'oauth-token --intercept', context: 'Piggyback browser sessions. No API keys, no config, no secrets in env. Already logged in.' },
+  23: { title: 'Photo Roast', context: 'Live demo: ffmpeg captures a photo of Lars presenting. Vision model roasts it. say delivers the verdict aloud.' },
+  24: { title: 'Cover / Close', context: 'Bookend close: "...and now you see why an agent taking over your browser should seem enticing. Give it a lick: npx sliccy"' }
+};
+
+// ─── LICK HELPER ────────────────────────────────────────────────────────────
+function fireSlideLick(slideNum) {
+  if (!window.slicc) return;
+  const ctx = SLIDE_CONTEXT[slideNum] || { title: 'Slide ' + slideNum, context: '' };
+  const today = new Date();
+  const isJune1 = (today.getMonth() === 5 && today.getDate() === 1);
+  const mode = isJune1 ? 'live-presentation' : (today < new Date('2026-06-01') ? 'dry-run' : 're-run');
+  
+  const payload = {
+    action: 'slide-advance',
+    data: {
+      slide: slideNum,
+      title: ctx.title,
+      context: ctx.context,
+      mode,
+      totalSlides: 24,
+      isReveal: slideNum === 12,
+      isLiveDemo: slideNum >= 13,
+      message: slideNum === 1
+        ? `Presentation started (${mode}). This is a live demo of SLICC itself — the presentation is a sprinkle running inside the agent. ${isJune1 ? 'This is the REAL presentation at AI Native DevCon.' : 'This is a ' + mode + '.'} Lars will narrate and may type prompts between slides. Follow along and respond contextually.`
+        : `Slide ${slideNum}: "${ctx.title}" — ${ctx.context}`
+    }
+  };
+  window.slicc.lick(payload);
+}
+
+// ─── THREE.JS PRESENTATION ENGINE ──────────────────────────────────────────
+// (Inline the core from index.html — slide loading, folding, navigation)
+
+const TOTAL_PANELS = 24;
+const PANELS_PER_SIDE = TOTAL_PANELS / 2;
+const COLS = 2;
+const ROWS = PANELS_PER_SIDE / COLS;
+const W = 1.414;
+const H = 1.0;
+const STACK_GAP = 0.005;
+const NUM_FOLDS = ROWS - 1;
+const GEO_SEGS_X = 32;
+const GEO_SEGS_Y = 24;
+const CRUMPLE_AMP = 0.0;
+const TEX_W = 512, TEX_H = 362;
+const TEX_SLIDE_W = 1024, TEX_SLIDE_H = 683;
+
+function frontPage(row, col) { return row * 2 + col + 1; }
+function backPage(row, col)  { return PANELS_PER_SIDE + row * 2 + (1 - col) + 1; }
+
+const SLIDE_MAP = {};
+for (let i = 1; i <= TOTAL_PANELS; i++) SLIDE_MAP[i] = i;
+
+// ─── THREE.JS SETUP ─────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xffffff);
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 100);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+controls.enabled = false; // Disable orbit for presentation mode
+
+scene.add(new THREE.AmbientLight(0xfff8f0, 0.4));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+sun.position.set(4, 10, 5); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 30;
+sun.shadow.camera.left = -10; sun.shadow.camera.right = 10;
+sun.shadow.camera.top = 10; sun.shadow.camera.bottom = -10;
+sun.shadow.bias = -0.001;
+scene.add(sun);
+scene.add(new THREE.DirectionalLight(0xddeeff, 0.3).translateX(-3).translateY(5).translateZ(-4));
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(30, 30),
+  new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0.0 })
+);
+ground.rotation.x = -Math.PI/2; ground.position.y = -0.05;
+ground.receiveShadow = true; scene.add(ground);
+
+// ─── LOAD ASSETS ────────────────────────────────────────────────────────────
+const paperImage = new Image();
+paperImage.crossOrigin = 'anonymous';
+let imageOk = false, bumpOk = false;
+const imageReady = new Promise(res => {
+  paperImage.onload = () => { imageOk = true; res(); };
+  paperImage.onerror = () => res();
+});
+paperImage.src = '/preview/shared/slicc-ikea-manual/material_6.png';
+
+let paperBumpTex = null;
+const bumpReady = new Promise(res => {
+  paperBumpTex = new THREE.TextureLoader().load(
+    '/preview/shared/slicc-ikea-manual/material_6.png',
+    tex => { tex.wrapS = tex.wrapT = THREE.RepeatWrapping; bumpOk = true; res(); },
+    undefined, () => res()
+  );
+});
+
+const slideImages = {};
+function loadSlide(num) {
+  return new Promise(res => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => { slideImages[num] = img; res(); };
+    img.onerror = () => res();
+    img.src = `/preview/shared/slicc-ikea-manual/slides/panel-${String(num).padStart(2, '0')}.png`;
+  });
+}
+const slidesReady = Promise.all(Array.from({length: TOTAL_PANELS}, (_, i) => loadSlide(i + 1)));
+const allReady = Promise.all([imageReady, bumpReady, slidesReady]);
+
+// ─── BAKED TEXTURE ──────────────────────────────────────────────────────────
+function makeBakedTex(label, side) {
+  const physicalNum = parseInt(label, 10);
+  const slideNum = SLIDE_MAP[physicalNum] || physicalNum;
+  const hasSlide = slideImages[slideNum];
+  const cW = hasSlide ? TEX_SLIDE_W : TEX_W;
+  const cH = hasSlide ? TEX_SLIDE_H : TEX_H;
+  const c = document.createElement('canvas');
+  c.width = cW; c.height = cH;
+  const ctx = c.getContext('2d');
+  if (imageOk) ctx.drawImage(paperImage, 0, 0, cW, cH);
+  else { ctx.fillStyle = '#e8e1cf'; ctx.fillRect(0, 0, cW, cH); }
+  if (side === 'back') { ctx.fillStyle = 'rgba(40,38,34,0.06)'; ctx.fillRect(0, 0, cW, cH); }
+  ctx.save();
+  if (side === 'back') { ctx.translate(cW/2, cH/2); ctx.rotate(Math.PI); ctx.translate(-cW/2, -cH/2); }
+  if (hasSlide) {
+    ctx.globalCompositeOperation = 'darken';
+    ctx.globalAlpha = 0.9;
+    ctx.drawImage(slideImages[slideNum], 0, 0, cW, cH);
+    ctx.globalAlpha = 1.0;
+    ctx.globalCompositeOperation = 'source-over';
+  } else {
+    ctx.fillStyle = 'rgba(30,28,25,0.85)';
+    ctx.font = 'bold 100px Georgia, serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, cW/2, cH/2);
+  }
+  ctx.restore();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+// ─── PANEL MESH ─────────────────────────────────────────────────────────────
+const allPanelMeshes = [];
+function makePanel(fp, bp, panelCenterX, panelCenterZ) {
+  const g = new THREE.Group();
+  const frontGeo = new THREE.PlaneGeometry(W, H, GEO_SEGS_X, GEO_SEGS_Y);
+  frontGeo.computeVertexNormals();
+  const backGeo = frontGeo.clone();
+  const bPos = backGeo.attributes.position;
+  for (let i = 0; i < bPos.count; i++) bPos.setZ(i, -bPos.getZ(i));
+  bPos.needsUpdate = true;
+  backGeo.computeVertexNormals();
+  const frontMatOpts = { map: makeBakedTex('' + fp, 'front'), roughness: 0.82, metalness: 0.0, side: THREE.FrontSide };
+  const backMatOpts = { map: makeBakedTex('' + bp, 'back'), roughness: 0.85, metalness: 0.0, side: THREE.FrontSide };
+  if (bumpOk) { frontMatOpts.bumpMap = paperBumpTex; frontMatOpts.bumpScale = 0.02; backMatOpts.bumpMap = paperBumpTex; backMatOpts.bumpScale = 0.02; }
+  const front = new THREE.Mesh(frontGeo, new THREE.MeshStandardMaterial(frontMatOpts));
+  front.rotation.x = -Math.PI / 2; front.castShadow = true; front.receiveShadow = true;
+  g.add(front);
+  const back = new THREE.Mesh(backGeo, new THREE.MeshStandardMaterial(backMatOpts));
+  back.rotation.x = Math.PI / 2; back.castShadow = true; back.receiveShadow = true;
+  g.add(back);
+  allPanelMeshes.push({ mesh: front, geo: frontGeo, isFront: true });
+  allPanelMeshes.push({ mesh: back, geo: backGeo, isFront: false });
+  return g;
+}
+
+// ─── PAPER HIERARCHY ────────────────────────────────────────────────────────
+const paperGroup = new THREE.Group();
+scene.add(paperGroup);
+let leftData, rightData, centralHinge;
+function rowZ(r) { return (r - (ROWS-1)/2) * H; }
+function creaseZ(r) { return (rowZ(r) + rowZ(r+1)) / 2; }
+
+function buildColumn(xOffset) {
+  const colGroup = new THREE.Group();
+  const foldHinges = [];
+  const col = xOffset > 0 ? 1 : 0;
+  const baseRow = makePanel('' + frontPage(ROWS-1, col), '' + backPage(ROWS-1, col), xOffset, rowZ(ROWS-1));
+  baseRow.position.set(xOffset, 0, rowZ(ROWS-1));
+  colGroup.add(baseRow);
+  let parentGroup = colGroup;
+  for (let f = NUM_FOLDS - 1; f >= 0; f--) {
+    const hinge = new THREE.Group();
+    if (f === NUM_FOLDS - 1) hinge.position.set(xOffset, 0, creaseZ(f));
+    else hinge.position.set(0, 0, creaseZ(f) - creaseZ(f + 1));
+    parentGroup.add(hinge);
+    foldHinges[f] = hinge;
+    const panel = makePanel('' + frontPage(f, col), '' + backPage(f, col), xOffset, rowZ(f));
+    panel.position.set(0, 0, -(H/2));
+    hinge.add(panel);
+    parentGroup = hinge;
+  }
+  return { group: colGroup, hinges: foldHinges };
+}
+
+function buildPaper() {
+  rightData = buildColumn(W/2);
+  paperGroup.add(rightData.group);
+  centralHinge = new THREE.Group();
+  paperGroup.add(centralHinge);
+  leftData = buildColumn(-W/2);
+  centralHinge.add(leftData.group);
+}
+
+// ─── ANIMATION STATE ────────────────────────────────────────────────────────
+const state = { folds: new Array(NUM_FOLDS).fill(0), central: 0, flipAngle: 0 };
+const target = { folds: new Array(NUM_FOLDS).fill(0), central: 0, flipAngle: 0 };
+let camPosT = new THREE.Vector3(0, 5, 4);
+let camLookT = new THREE.Vector3(0, 0, 0);
+
+// ─── STEP DEFINITIONS ───────────────────────────────────────────────────────
+const UNFOLD_STEPS = 2 + NUM_FOLDS;
+const FRONT_ZOOM_START = UNFOLD_STEPS;
+const FRONT_ZOOM_END = FRONT_ZOOM_START + PANELS_PER_SIDE - 1;
+const FRONT_OVERVIEW = FRONT_ZOOM_END + 1;
+const FLIP_STEP = FRONT_OVERVIEW + 1;
+const BACK_ZOOM_START = FLIP_STEP + 1;
+const BACK_ZOOM_END = BACK_ZOOM_START + PANELS_PER_SIDE - 2;
+const BACK_OVERVIEW = BACK_ZOOM_END + 1;
+const TOTAL_STEPS = BACK_OVERVIEW + 1;
+
+function camForExtent(width, height, cx = 0, cz = 0) {
+  const fov = 45 * Math.PI / 180;
+  const aspect = innerWidth / innerHeight || 16/9;
+  const distH = (height / 2) / Math.tan(fov / 2);
+  const distW = (width / 2) / (Math.tan(fov / 2) * aspect);
+  const dist = Math.max(distH, distW, 2.0) * 1.3;
+  return { pos: [cx, dist * 0.82, cz + dist * 0.6], look: [cx, 0, cz] };
+}
+function overviewCam() { return camForExtent(W * 2, ROWS * H, 0, 0); }
+function unfoldCenter(numRowsVisible, centralOpen) {
+  const cx = centralOpen ? 0 : W/4;
+  const bottomZ = rowZ(ROWS - 1);
+  const topZ = rowZ(ROWS - numRowsVisible);
+  return { cx, cz: (bottomZ + topZ) / 2 };
+}
+function panelWorldPos(page) {
+  const side = page <= PANELS_PER_SIDE ? 'front' : 'back';
+  const idx = side === 'front' ? page - 1 : page - PANELS_PER_SIDE - 1;
+  const row = Math.floor(idx / 2);
+  const col = idx % 2;
+  return { x: col === 0 ? -W/2 : W/2, z: rowZ(row) };
+}
+
+function getStepConfig(s) {
+  const ov = overviewCam();
+  if (s < UNFOLD_STEPS) {
+    const folds = new Array(NUM_FOLDS).fill(0);
+    if (s === 0) {
+      folds.fill(Math.PI);
+      const coverX = W / 2;
+      const coverZ = rowZ(ROWS - 1);
+      const fov = 45 * Math.PI / 180;
+      const aspect = innerWidth / innerHeight || 16/9;
+      const fitH = (H / 2) / Math.tan(fov / 2);
+      const fitW = (W / 2) / (Math.tan(fov / 2) * aspect);
+      const dist = Math.max(fitH, fitW) * 1.02;
+      return { folds, central: -Math.PI, flipAngle: 0, pos: [coverX, dist, coverZ], look: [coverX, 0, coverZ], label: 'Cover' };
+    }
+    if (s === 1) {
+      folds.fill(Math.PI);
+      const { cx, cz } = unfoldCenter(1, true);
+      const cam = camForExtent(W * 2.2, H * 1.2, cx, cz);
+      return { folds, central: 0, flipAngle: 0, ...cam, label: 'Central open' };
+    }
+    const numUnfolded = s - 1;
+    for (let f = 0; f < NUM_FOLDS; f++) folds[f] = (f >= NUM_FOLDS - numUnfolded) ? 0 : Math.PI;
+    const visibleRows = numUnfolded + 1;
+    const { cx, cz } = unfoldCenter(visibleRows, true);
+    const cam = camForExtent(W * 2.1, visibleRows * H * 1.1, cx, cz);
+    return { folds, central: 0, flipAngle: 0, ...cam, label: 'Unfolding' };
+  }
+  if (s >= FRONT_ZOOM_START && s <= FRONT_ZOOM_END) {
+    const page = s - FRONT_ZOOM_START + 1;
+    const p = panelWorldPos(page);
+    const single = camForExtent(W * 1.1, H * 1.1);
+    const dist = Math.sqrt(single.pos[1]**2 + single.pos[2]**2);
+    return { folds: new Array(NUM_FOLDS).fill(0), central: 0, flipAngle: 0, pos: [p.x, dist * 0.75, p.z + dist * 0.55], look: [p.x, 0, p.z], label: 'Slide ' + (SLIDE_MAP[page] || page) };
+  }
+  if (s === FRONT_OVERVIEW) return { folds: new Array(NUM_FOLDS).fill(0), central: 0, flipAngle: 0, ...ov, label: 'Front overview' };
+  if (s === FLIP_STEP) {
+    const flipCam = camForExtent(W * 2.5, ROWS * H * 1.2);
+    return { folds: new Array(NUM_FOLDS).fill(0), central: 0, flipAngle: Math.PI, pos: [flipCam.pos[0], flipCam.pos[1] + W * 1.2, flipCam.pos[2] * 1.05], look: [0, 0, 0], label: 'Flipping' };
+  }
+  if (s >= BACK_ZOOM_START && s <= BACK_ZOOM_END) {
+    const page = PANELS_PER_SIDE + (s - BACK_ZOOM_START) + 1;
+    const p = panelWorldPos(page);
+    const single = camForExtent(W * 1.1, H * 1.1);
+    const dist = Math.sqrt(single.pos[1]**2 + single.pos[2]**2);
+    return { folds: new Array(NUM_FOLDS).fill(0), central: 0, flipAngle: Math.PI, pos: [p.x, dist * 0.75, p.z + dist * 0.55], look: [p.x, 0, p.z], label: 'Slide ' + (SLIDE_MAP[page] || page) };
+  }
+  if (s === BACK_OVERVIEW) return { folds: new Array(NUM_FOLDS).fill(0), central: 0, flipAngle: Math.PI, ...ov, label: 'Back overview' };
+  return { folds: new Array(NUM_FOLDS).fill(0), central: 0, flipAngle: 0, ...ov, label: '?' };
+}
+
+// ─── NAVIGATION ─────────────────────────────────────────────────────────────
+let step = 0;
+let currentSlide = 24; // Start on cover
+
+function stepToSlide(s) {
+  if (s === 0) return 24; // cover
+  if (s >= FRONT_ZOOM_START && s <= FRONT_ZOOM_END) return s - FRONT_ZOOM_START + 1;
+  if (s >= BACK_ZOOM_START && s <= BACK_ZOOM_END) return PANELS_PER_SIDE + (s - BACK_ZOOM_START) + 1;
+  return null; // transition steps don't map to a slide
+}
+
+function goTo(s) {
+  step = Math.max(0, Math.min(TOTAL_STEPS - 1, s));
+  const c = getStepConfig(step);
+  for (let f = 0; f < NUM_FOLDS; f++) target.folds[f] = c.folds[f];
+  target.central = c.central;
+  target.flipAngle = c.flipAngle;
+  camPosT.set(...c.pos);
+  camLookT.set(...c.look);
+  document.getElementById('info').textContent = c.label;
+
+  const slide = stepToSlide(step);
+  if (slide && slide !== currentSlide) {
+    currentSlide = slide;
+    fireSlideLick(slide);
+  }
+}
+
+function advance() { goTo(step + 1); }
+function retreat() { goTo(step - 1); }
+
+// ─── FLIP DEFORMATION ───────────────────────────────────────────────────────
+function applyRollDeformation(progressRaw) {
+  if (paperGroup.userData.lastRollP !== undefined && Math.abs(progressRaw - paperGroup.userData.lastRollP) < 0.0005 && (progressRaw === 0 || progressRaw === 1)) return;
+  paperGroup.userData.lastRollP = progressRaw;
+  const p = 0.5 - 0.5 * Math.cos(Math.PI * progressRaw);
+  const phi = Math.PI * p;
+  const cosF = Math.cos(phi), sinF = Math.sin(phi);
+  const MAX_BEND = 1.2;
+  const A = MAX_BEND * Math.sin(Math.PI * p);
+  const cA = Math.cos(A), sA = Math.sin(A);
+  const diagLen = Math.hypot(W, H);
+  const ax = W / diagLen, az = H / diagLen;
+  for (const entry of allPanelMeshes) {
+    const { mesh, geo, isFront } = entry;
+    const panelGroup = mesh.parent;
+    const panelWorldPos = new THREE.Vector3();
+    panelGroup.getWorldPosition(panelWorldPos);
+    const panelX = panelWorldPos.x, panelZ = panelWorldPos.z;
+    const pos = geo.attributes.position;
+    if (!geo.userData.origX) {
+      geo.userData.origX = new Float32Array(pos.count);
+      geo.userData.origY = new Float32Array(pos.count);
+      geo.userData.origZ = new Float32Array(pos.count);
+      for (let i = 0; i < pos.count; i++) { geo.userData.origX[i] = pos.getX(i); geo.userData.origY[i] = pos.getY(i); geo.userData.origZ[i] = pos.getZ(i); }
+    }
+    const ox = geo.userData.origX, oy = geo.userData.origY, oz = geo.userData.origZ;
+    const s = isFront ? 1 : -1;
+    for (let i = 0; i < pos.count; i++) {
+      let wx = panelX + ox[i], wy = s * oz[i], wz = panelZ - s * oy[i];
+      const sigma = wz * ax - wx * az;
+      if (sigma > 0 && A > 1e-5) {
+        const dot = ax * wx + az * wz;
+        const cxX = -az * wy, cxY = az * wx - ax * wz, cxZ = ax * wy;
+        const k = 1 - cA;
+        wx = wx * cA + cxX * sA + ax * dot * k;
+        wy = wy * cA + cxY * sA;
+        wz = wz * cA + cxZ * sA + az * dot * k;
+      }
+      const nwx = wx * cosF + wy * sinF;
+      const nwy = (W / 2 - wx) * sinF + wy * cosF;
+      pos.setX(i, nwx - panelX);
+      pos.setY(i, s * (panelZ - wz));
+      pos.setZ(i, s * nwy);
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+  }
+}
+
+// ─── RENDER LOOP ────────────────────────────────────────────────────────────
+function lerp(a, b, t) { return a + (b - a) * t; }
+function update(dt) {
+  const t = 1 - Math.exp(-dt * 4);
+  for (let f = 0; f < NUM_FOLDS; f++) {
+    state.folds[f] = lerp(state.folds[f], target.folds[f], t);
+    leftData.hinges[f].rotation.x = state.folds[f];
+    rightData.hinges[f].rotation.x = state.folds[f];
+    const progress = state.folds[f] / Math.PI;
+    leftData.hinges[f].position.y = progress * STACK_GAP * (NUM_FOLDS - f) * ((f % 2 === 0) ? 1 : -1);
+    rightData.hinges[f].position.y = progress * STACK_GAP * (NUM_FOLDS - f) * ((f % 2 === 0) ? 1 : -1);
+  }
+  state.central = lerp(state.central, target.central, t);
+  centralHinge.rotation.z = state.central;
+  centralHinge.position.y = (Math.abs(state.central) / Math.PI) * STACK_GAP * (NUM_FOLDS + 1) * 3;
+  state.flipAngle = lerp(state.flipAngle, target.flipAngle, t);
+  applyRollDeformation(state.flipAngle / Math.PI);
+  const camT = 1 - Math.exp(-dt * 3);
+  camera.position.lerp(camPosT, camT);
+  controls.target.lerp(camLookT, camT);
+  controls.update();
+}
+
+const clock = new THREE.Clock();
+let ready = false;
+(function loop() {
+  requestAnimationFrame(loop);
+  if (!document.hidden && ready) { update(clock.getDelta()); renderer.render(scene, camera); }
+})();
+
+// ─── INPUT ──────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); advance(); }
+  if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); retreat(); }
+});
+canvas.addEventListener('click', advance);
+
+// HUD: show on hover over lower 1/5
+const hud = document.getElementById('hud');
+document.addEventListener('mousemove', e => {
+  hud.classList.toggle('visible', e.clientY > innerHeight * 0.8);
+});
+document.getElementById('prev').addEventListener('click', e => { e.stopPropagation(); retreat(); });
+document.getElementById('next').addEventListener('click', e => { e.stopPropagation(); advance(); });
+
+// ─── RESIZE ─────────────────────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  // Re-center camera for new aspect ratio
+  if (ready) {
+    const c = getStepConfig(step);
+    camPosT.set(...c.pos);
+    camLookT.set(...c.look);
+  }
+});
+
+// ─── INIT ───────────────────────────────────────────────────────────────────
+allReady.then(() => {
+  buildPaper();
+  paperGroup.userData.lastRollP = 0;
+  ready = true;
+  goTo(0);
+  renderer.render(scene, camera);
+  // Fire initial lick
+  fireSlideLick(24);
+});
+</script>
+</body>
+</html>
